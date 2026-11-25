@@ -11,3 +11,9 @@ curl -fsSL https://raw.githubusercontent.com/mverschu/bhce/refs/heads/main/insta
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mverschu/bhce/refs/heads/main/install.sh | sudo bash -s -- --public
 ```
+
+**To uninstall a BHCE install for e.g. reinstallation purposes**
+
+```bash
+sudo /usr/local/bin/bloodhound-cli uninstall
+```
