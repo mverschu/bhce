@@ -153,6 +153,134 @@ port_is_listening() {
     fail "Install iproute2 or net-tools so the installer can check port availability."
 }
 
+QUERIES_DIR="/usr/local/share/bhce"
+QUERY_RAW_BASE="https://raw.githubusercontent.com/mverschu/bhce/refs/heads/main/lib"
+
+bh_config_dir() {
+    if [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
+        printf '%s/bloodhound\n' "$XDG_CONFIG_HOME"
+    else
+        printf '%s/.config/bloodhound\n' "$HOME"
+    fi
+}
+
+install_query_files() {
+    local source_dir=""
+    mkdir -p "$QUERIES_DIR"
+    if [[ -n "${BASH_SOURCE[0]:-}" && -f "${BASH_SOURCE[0]}" ]]; then
+        source_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib"
+    fi
+    if [[ -f "${source_dir}/cq.json" && -f "${source_dir}/import_saved_queries.py" ]]; then
+        install -m 0644 "${source_dir}/cq.json" "${QUERIES_DIR}/cq.json"
+        install -m 0644 "${source_dir}/import_saved_queries.py" "${QUERIES_DIR}/import_saved_queries.py"
+        info "Installed custom queries from ${source_dir}"
+        return 0
+    fi
+
+    info "Downloading custom queries..."
+    if ! curl -fsSL "${QUERY_RAW_BASE}/cq.json" -o "${QUERIES_DIR}/cq.json"; then
+        fail "Failed to download cq.json"
+    fi
+    if ! curl -fsSL "${QUERY_RAW_BASE}/import_saved_queries.py" -o "${QUERIES_DIR}/import_saved_queries.py"; then
+        fail "Failed to download import_saved_queries.py"
+    fi
+    chmod 0644 "${QUERIES_DIR}/cq.json" "${QUERIES_DIR}/import_saved_queries.py"
+}
+
+patch_query_import_service() {
+    local compose="$1"
+    local service tmp
+    [[ -f "$compose" ]] || fail "BloodHound compose file not found: ${compose}"
+    if grep -q 'bhce_query_import' "$compose"; then
+        info "Custom query import service already present"
+        return 0
+    fi
+
+    service="$(mktemp)"
+    tmp="$(mktemp)"
+    cat >"$service" <<'EOF'
+  query-import:
+    labels:
+      name: "bhce_query_import"
+    image: docker.io/library/python:3.12-alpine
+    restart: on-failure
+    depends_on:
+      app-db:
+        condition: service_healthy
+      bloodhound:
+        condition: service_started
+    environment:
+      BH_URL: http://bloodhound:8080
+      BH_CONFIG: /run/bh/bloodhound.config.json
+      CQ_PATH: /queries/cq.json
+      PGHOST: app-db
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-bloodhound}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-bloodhoundcommunityedition}
+      PGDATABASE: ${POSTGRES_DB:-bloodhound}
+    volumes:
+      - /usr/local/share/bhce:/queries:ro
+      - ./bloodhound.config.json:/run/bh/bloodhound.config.json:ro
+    entrypoint: ["python3", "/queries/import_saved_queries.py"]
+
+EOF
+    if ! awk -v svc="$service" '
+        /^volumes:/ && !inserted {
+            while ((getline line < svc) > 0) {
+                print line
+            }
+            close(svc)
+            inserted = 1
+        }
+        { print }
+        END {
+            if (!inserted) {
+                exit 2
+            }
+        }
+    ' "$compose" >"$tmp"; then
+        rm -f "$service" "$tmp"
+        fail "Failed to add the custom query import service to ${compose}"
+    fi
+    mv "$tmp" "$compose"
+    rm -f "$service"
+    info "Added custom query import service"
+}
+
+wait_for_query_import() {
+    local cid="" attempt state code restarts
+    for attempt in $(seq 1 30); do
+        cid="$(docker ps -aq --filter label=name=bhce_query_import | head -n 1 || true)"
+        if [[ -n "$cid" ]]; then
+            break
+        fi
+        sleep 2
+    done
+    [[ -n "$cid" ]] || fail "Custom query import container was not created."
+
+    for attempt in $(seq 1 150); do
+        state="$(docker inspect --format '{{.State.Status}}' "$cid")"
+        code="$(docker inspect --format '{{.State.ExitCode}}' "$cid")"
+        restarts="$(docker inspect --format '{{.RestartCount}}' "$cid")"
+        if [[ "$state" == "exited" && "$code" == "0" ]]; then
+            info "Custom queries imported"
+            return 0
+        fi
+        if [[ "$state" == "exited" && "$code" != "0" && "$restarts" -ge 2 ]]; then
+            docker update --restart=no "$cid" >/dev/null 2>&1 || true
+            error "Custom query import failed."
+            docker logs --tail 80 "$cid" >&2 || true
+            fail "BloodHound is running, but custom queries were not imported."
+        fi
+        sleep 2
+    done
+
+    docker update --restart=no "$cid" >/dev/null 2>&1 || true
+    error "Custom query import did not finish."
+    docker logs --tail 80 "$cid" >&2 || true
+    fail "BloodHound is running, but custom queries were not imported."
+}
+
 # Install dependencies
 info "Installing dependencies..."
 
@@ -263,6 +391,9 @@ fi
 
 info "BloodHound installation completed"
 
+install_query_files
+patch_query_import_service "$(bh_config_dir)/docker-compose.yml"
+
 # Apply requested binding
 info "Applying network configuration..."
 
@@ -342,6 +473,9 @@ info "Checking BloodHound services..."
 if ! /usr/local/bin/bloodhound-cli running; then
     fail "BloodHound services are not running correctly."
 fi
+
+info "Importing custom queries..."
+wait_for_query_import
 
 # Final output
 echo
