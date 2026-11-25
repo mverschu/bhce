@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
@@ -256,7 +255,7 @@ info "Installing BloodHound CE..."
 # BLOODHOUND_HOST is the official Docker Compose
 # environment variable controlling the published UI port.
 if ! env BLOODHOUND_HOST="$BIND_ADDRESS" \
-    bloodhound-cli install >"$LOG_FILE" 2>&1; then
+    /usr/local/bin/bloodhound-cli install >"$LOG_FILE" 2>&1; then
     error "BloodHound installation failed."
     tail -n 30 "$LOG_FILE"
     exit 1
@@ -268,7 +267,7 @@ info "BloodHound installation completed"
 info "Applying network configuration..."
 
 if ! env BLOODHOUND_HOST="$BIND_ADDRESS" \
-    bloodhound-cli up >"$LOG_FILE" 2>&1; then
+    /usr/local/bin/bloodhound-cli up >"$LOG_FILE" 2>&1; then
     error "Failed to start BloodHound with requested binding."
     tail -n 30 "$LOG_FILE"
     exit 1
@@ -281,7 +280,7 @@ info "Retrieving admin credentials..."
 
 ADMIN_USER="admin"
 
-ADMIN_PASSWORD="$(bloodhound-cli config get default_password 2>/dev/null || true)"
+ADMIN_PASSWORD="$(/usr/local/bin/bloodhound-cli config get default_password 2>/dev/null || true)"
 
 if [[ -z "$ADMIN_PASSWORD" ]]; then
     fail "Could not retrieve admin password."
@@ -340,7 +339,7 @@ fi
 # Verify BloodHound services
 info "Checking BloodHound services..."
 
-if ! bloodhound-cli running; then
+if ! /usr/local/bin/bloodhound-cli running; then
     fail "BloodHound services are not running correctly."
 fi
 
