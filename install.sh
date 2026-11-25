@@ -470,7 +470,7 @@ fi
 # Verify BloodHound services
 info "Checking BloodHound services..."
 
-if ! /usr/local/bin/bloodhound-cli running; then
+if ! /usr/local/bin/bloodhound-cli running >/dev/null 2>&1; then
     fail "BloodHound services are not running correctly."
 fi
 
